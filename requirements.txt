@@ -1,0 +1,12 @@
+faiss_gpu==1.7.2
+fastapi==0.116.1
+PyMuPDF==1.24.9
+fitz==0.0.1.dev2
+numpy==1.24.4
+Pillow==11.3.0
+pydantic==2.11.7
+pytesseract==0.3.13
+sentence_transformers==5.1.0
+torch==2.5.1+cu121
+transformers==4.47.1
+underthesea==6.8.4
