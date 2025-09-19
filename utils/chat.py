@@ -1,8 +1,8 @@
 import faiss
 import pickle
 import numpy as np
-from transformers import TextIteratorStreamer
-import threading
+from transformers import TextIteratorStreamer, GenerationConfig
+from threading import Thread
 from consts import settings, llm_model, llm_tokenizer, embedding_model
 
 
@@ -25,7 +25,7 @@ def get_relevant_chunks(
     faiss_index,
     chunks,
     top_k=3,
-    max_tokens_per_chunk=512,
+    max_tokens_per_chunk=5120,
 ):
     query_vector = embedding_model.encode(
         [query]
@@ -60,21 +60,18 @@ Câu hỏi: {question}
 
 
 def configure_generation():
-    generation_config = llm_model.generation_config
-    generation_config.max_new_tokens = 256  # đủ dài để trả lời rõ
-    generation_config.num_beams = 3  # tăng tính chính xác (tìm tốt hơn)
-    generation_config.early_stopping = True
-    generation_config.do_sample = True  # dùng beam search (ổn định, không ngẫu nhiên)
-    generation_config.num_return_sequences = 1
-
-    # Các tham số sau sẽ bị **bỏ qua** vì `do_sample = False`
-    # → bạn nên xóa hoặc để chú thích
-    generation_config.temperature = None
-    generation_config.top_p = 1.0
-
-    # Thêm 2 tham số giúp giảm lặp, sát nghĩa hơn:
-    # generation_config.repetition_penalty = 1.2
-    # generation_config.no_repeat_ngram_size = 3
+    generation_config = GenerationConfig(
+        max_new_tokens = 256,
+        # num_beams = 3,
+        # early_stopping = True,
+        do_sample = True,
+        num_return_sequences = 1,
+        temperature = 0.7,
+        top_p = 0.95,
+        top_k = 50,
+        # repetition_penalty = 1.2,
+        # no_repeat_ngram_size = 3,
+    )
 
     return generation_config
 
@@ -124,30 +121,35 @@ def get_response(query: str):
 
 def generate_answer_stream(prompt):
     # Tokenize và đưa lên GPU
-    encoding = llm_tokenizer(prompt, return_tensors="pt")
-    input_ids = encoding["input_ids"].to(llm_model.device)
-    attention_mask = encoding["attention_mask"].to(llm_model.device)
+    encoding = llm_tokenizer(prompt, return_tensors="pt").to(llm_model.device)
 
     # Tạo streamer để lấy token sinh ra
     streamer = TextIteratorStreamer(
         llm_tokenizer,
+        timeout=30,
         skip_prompt=True,
         skip_special_tokens=True,
     )
 
     # Chạy sinh văn bản trong thread phụ
     generation_kwargs = {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
+        "input_ids": encoding.input_ids,
+        "attention_mask": encoding.attention_mask,
         "generation_config": configure_generation(),
         "streamer": streamer,
     }
-    thread = threading.Thread(target=llm_model.generate, kwargs=generation_kwargs)
+    thread = Thread(target=llm_model.generate, kwargs=generation_kwargs)
     thread.start()
 
-    # Yield từng token
-    for token in streamer:
-        yield token
+    # Yield từng token với error handling
+    try:
+        for token in streamer:
+            if token:  # Chỉ yield token không rỗng
+                yield token
+    except Exception as e:
+        yield f" [Lỗi streaming: {str(e)}]"
+    finally:
+        thread.join()  # Đảm bảo thread được join
 
 
 def get_response_stream(query: str):
@@ -162,7 +164,7 @@ def get_response_stream(query: str):
         prompt = build_prompt(context_chunks, query)
 
         # Trả về generator từ mô hình
-        return generate_answer_stream(prompt)
+        yield from generate_answer_stream(prompt)
 
     except Exception as e:
         print(f"❌ Lỗi trong get_response_stream: {e}")
